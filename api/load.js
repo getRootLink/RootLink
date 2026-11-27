@@ -6,9 +6,9 @@ export default async function handler(req, res) {
     const owner = await archiveOwner(req, res);
     if (!owner) return;
     const url = new URL(`${process.env.SUPABASE_URL}/rest/v1/archives`);
-    // Quote PostgREST values too: email addresses may contain filter punctuation.
-    const quotedOwner = owner.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    url.searchParams.set('user_id', `eq."${quotedOwner}"`);
+    // A standalone eq filter treats its entire value literally, including quotes.
+    // URLSearchParams handles URL encoding without changing the verified email.
+    url.searchParams.set('user_id', `eq.${owner}`);
     url.searchParams.set('select', 'data');
     url.searchParams.set('order', 'created_at.desc,id.desc');
     url.searchParams.set('limit', '1');
