@@ -240,25 +240,53 @@
 
 <script>
 var currentUser = null;
+var archiveLoadComplete = false;
+
+function archiveNotice(message) {
+  let notice = document.getElementById('archive-status');
+  if (!notice) {
+    notice = document.createElement('div');
+    notice.id = 'archive-status';
+    notice.setAttribute('role', 'status');
+    notice.style.cssText = 'position:fixed;bottom:20px;left:20px;right:20px;z-index:9999;padding:12px;background:#fff3cd;color:#664d03;border:1px solid #ffecb5;border-radius:8px;';
+    document.body.appendChild(notice);
+  }
+  notice.textContent = message;
+  notice.hidden = !message;
+}
+
+async function archiveHeaders() {
+  const { data: { session }, error } = await _sb.auth.getSession();
+  if (error || !session || session.user.id !== currentUser?.id) {
+    throw new Error('Sign in required');
+  }
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
+}
   var _sb = window.supabase.createClient(
     'https://zjxtyukdvuvhoxldpakk.supabase.co',
     'sb_publishable_prGtV9CcT8uchDMPF643vg_K8FkKy2m'
   );
-  _sb.auth.getSession().then(({ data: { session } }) => {
+  var archiveInitialization = _sb.auth.getSession().then(async ({ data: { session }, error }) => {
+    if (error) throw error;
     if (session) {
       currentUser = session.user;
-      loadFromServer(session.user.email);
+      await loadFromServer();
     }
+  }).catch(() => {
+    archiveNotice(currentLang === 'zh' ? '无法确认登录状态，请重新登录。' : 'Unable to check sign in. Please sign in again.');
   });
   
-async function loadFromServer(email) {
+async function loadFromServer() {
   try {
     const res = await fetch('/api/load', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: email })
+      headers: await archiveHeaders(),
+      body: JSON.stringify({})
     });
+    if (!res.ok) throw new Error('Archive load failed');
     const { data } = await res.json();
+    archiveLoadComplete = true;
+    archiveNotice('');
     if (!data) return;
     if (data.familyInfo) { familyInfo = data.familyInfo; updateInfoPanel(); }
     if (data.todos) { todos = data.todos; updateTodoPanel(); updateBadge(); }
@@ -276,11 +304,15 @@ async function loadFromServer(email) {
       });
       messages.scrollTop = messages.scrollHeight;
     }
-  } catch(e) { console.log('读档失败', e); }
+  } catch(e) {
+    archiveLoadComplete = false;
+    archiveNotice(currentLang === 'zh' ? '档案读取失败，已暂停自动保存。请重新登录后刷新页面。' : 'Archive loading failed. Auto-save is paused. Please sign in again and refresh.');
+  }
 }
 
 async function saveToServer() {
   if (!currentUser) return;
+  if (!archiveLoadComplete) return;
   const payload = {
     familyInfo,
     todos,
@@ -290,12 +322,16 @@ async function saveToServer() {
     }))
   };
   try {
-    await fetch('/api/save', {
+    const res = await fetch('/api/save', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser.email, data: payload })
+      headers: await archiveHeaders(),
+      body: JSON.stringify({ data: payload })
     });
-  } catch(e) { console.log('存档失败', e); }
+    if (!res.ok) throw new Error('Archive save failed');
+    archiveNotice('');
+  } catch(e) {
+    archiveNotice(currentLang === 'zh' ? '档案保存失败。请先导出本地副本，再重新登录重试。' : 'Archive saving failed. Export a local copy before signing in again to retry.');
+  }
 }
   const API_URL = '/api/chat';
   let currentLang = localStorage.getItem('rootlink_lang') || 'en';
@@ -682,6 +718,7 @@ async function saveToServer() {
   function scrollDown() { const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
 
   async function sendMessage() {
+    await archiveInitialization;
     const input = document.getElementById('input');
     const text = input.value.trim();
     if (!text || isLoading) return;
