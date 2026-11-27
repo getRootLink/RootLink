@@ -137,7 +137,7 @@ test('save uses the verified email in the archive body and succeeds', async () =
   assert.equal(calls[1].options.method, 'POST');
 });
 
-test('load uses the verified email, quotes filter punctuation, and requests newest snapshot', async () => {
+test('load uses the literal verified email and requests newest snapshot', async () => {
   setConfiguredEnv();
   const user = { ...verifiedUser, email: 'o"hara+archive@example.com' };
   const calls = [];
@@ -152,9 +152,43 @@ test('load uses the verified email, quotes filter punctuation, and requests newe
   assert.deepEqual(res.result.body, { data: { version: 7 } });
   assert.equal(calls.length, 2);
   const dbUrl = new URL(calls[1].url);
-  assert.equal(dbUrl.searchParams.get('user_id'), 'eq."o\\"hara+archive@example.com"');
+  assert.equal(dbUrl.searchParams.get('user_id'), `eq.${user.email}`);
   assert.equal(dbUrl.searchParams.get('order'), 'created_at.desc,id.desc');
   assert.equal(dbUrl.searchParams.get('limit'), '1');
+});
+
+test('saved snapshots can be read using standalone PostgREST eq literal semantics', async (t) => {
+  // PostgREST QueryParams.hs: pRequestFilter uses pOpExpr pSingleVal;
+  // pSingleVal = toS <$> many anyChar. Quotes are literal in this filter.
+  // https://github.com/PostgREST/postgrest/blob/v12.2.3/src/PostgREST/ApiRequest/QueryParams.hs
+  for (const email of ['person@example.com', 'o"hara+archive@example.com', 'a,b(c):d\\e&x=y@example.com']) {
+    await t.test(email, async () => {
+      setConfiguredEnv();
+      const user = { ...verifiedUser, email };
+      const snapshots = [];
+      globalThis.fetch = async (url, options = {}) => {
+        if (String(url).endsWith('/auth/v1/user')) return response(user);
+        if (options.method === 'POST') {
+          snapshots.push(JSON.parse(options.body));
+          return response(null, 201);
+        }
+        const query = new URL(url).searchParams;
+        assert.deepEqual([...query.keys()].sort(), ['limit', 'order', 'select', 'user_id']);
+        const filter = query.get('user_id');
+        assert.ok(filter.startsWith('eq.'));
+        const literal = filter.slice(3);
+        return response(snapshots.filter(row => row.user_id === literal).map(row => ({ data: row.data })));
+      };
+      const data = { conversation: [{ role: 'user', content: 'archive regression test' }] };
+      const saved = makeRes();
+      await saveHandler(req({ body: { data } }), saved);
+      assert.equal(saved.result.statusCode, 200);
+      const loaded = makeRes();
+      await loadHandler(req(), loaded);
+      assert.equal(loaded.result.statusCode, 200);
+      assert.deepEqual(loaded.result.body, { data });
+    });
+  }
 });
 
 test('unverified auth user is rejected before archive access', async () => {
